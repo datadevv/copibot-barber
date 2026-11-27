@@ -191,9 +191,31 @@ def cancelar_turno(datos, ruta_excel="turnos.xlsx"):
   )
 
 
-def marcar_corte_realizado(datos, ruta_excel="turnos.xlsx"):
-  if not os.path.exists(ruta_excel):
-    return "📅 No hay turnos agendados para marcar como realizados."
+  coincidencias = []
+  for numero_fila in range(2, hoja.max_row + 1):
+    fila = [hoja.cell(numero_fila, col).value for col in range(1, 7)]
+    if not fila or str(fila[5] or "").strip().lower() != "agendado":
+      continue
+    if cliente and cliente not in str(fila[2] or "").strip().lower():
+      continue
+    if hora and hora != _normalizar_hora_excel(fila[1]):
+      continue
+    if fecha and fecha != _normalizar_fecha_excel(fila[0]):
+      continue
+    coincidencias.append((numero_fila, fila))
+
+  # Si no hubo coincidencias con fecha, reintentar ignorando la fecha
+  # (el parser rellena "hoy" cuando el usuario no dio fecha)
+  if not coincidencias and cliente:
+    for numero_fila in range(2, hoja.max_row + 1):
+      fila = [hoja.cell(numero_fila, col).value for col in range(1, 7)]
+      if not fila or str(fila[5] or "").strip().lower() != "agendado":
+        continue
+      if cliente not in str(fila[2] or "").strip().lower():
+        continue
+      if hora and hora != _normalizar_hora_excel(fila[1]):
+        continue
+      coincidencias.append((numero_fila, fila))
 
   libro, hoja = _abrir_excel_turnos(ruta_excel)
   cliente = str(datos.get("cliente") or "").strip().lower()
