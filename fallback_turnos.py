@@ -57,7 +57,19 @@ def _resolver_fecha(texto_bajo: str, hoy: datetime) -> tuple[str, str]:
       return fecha_formateada, texto_limpio
     except ValueError:
       pass
-
+  m_dia = re.search(r"\bel\s+(\d{1,2})\b(?!\s*[:/-]|\s*hs)", texto_bajo)
+  if m_dia:
+    dia = int(m_dia.group(1))
+    try:
+      candidata = datetime(hoy.year, hoy.month, dia)
+      if candidata.date() < hoy.date():
+        mes = hoy.month % 12 + 1
+        anio = hoy.year + (1 if hoy.month == 12 else 0)
+        candidata = datetime(anio, mes, dia)
+      texto_limpio = texto_bajo[: m_dia.start()] + " " + texto_bajo[m_dia.end():]
+      return candidata.strftime("%d-%m-%y"), texto_limpio
+    except ValueError:
+      pass
   if "pasado mañana" in texto_bajo or "pasado manana" in texto_bajo:
     return (hoy + timedelta(days=2)).strftime("%d-%m-%y"), texto_bajo
   if "mañana" in texto_bajo or "manana" in texto_bajo:
