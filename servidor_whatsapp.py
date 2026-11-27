@@ -24,7 +24,10 @@ EVOLUTION_URL = os.getenv("EVOLUTION_URL", "").rstrip("/")
 EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 EVOLUTION_APIKEY = os.getenv("EVOLUTION_APIKEY", "")
 
-REMITENTES_AUTORIZADOS = {"5491176361030@s.whatsapp.net" "5491136504266@s.whatsapp.net"}
+REMITENTES_AUTORIZADOS = {
+    "5491176361030@s.whatsapp.net",
+    "5491136504266@s.whatsapp.net",
+}
            
 mensajes_vistos = set()
 ultimo_filtro_turnos = {"todos": False, "fecha": ""}
