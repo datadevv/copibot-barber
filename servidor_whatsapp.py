@@ -304,7 +304,7 @@ def procesar_mensajes(mensajes):
 @app.route("/webhook", methods=["POST"])
 def recibir_mensaje_whatsapp():
   datos_recibidos = request.get_json(silent=True) or {}
-      print("📥 RECIBIDO:", str(datos_recibidos)[:600], flush=True)
+  print("📥 RECIBIDO:", str(datos_recibidos)[:600], flush=True)
 
   data = datos_recibidos.get("data")
   clave = data.get("key", {}) if isinstance(data, dict) else {}
