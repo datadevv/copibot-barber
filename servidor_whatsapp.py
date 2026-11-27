@@ -28,9 +28,26 @@ REMITENTES_AUTORIZADOS = {
     "5491176361030@s.whatsapp.net",
     "5491136504266@s.whatsapp.net",
 }
-           
+
+# Este número conserva el Excel que ya existía (turnos.xlsx).
+# Los demás reciben su propio archivo: turnos_<numero>.xlsx
+NUMERO_AGENDA_ORIGINAL = "5491176361030"
+
 mensajes_vistos = set()
-ultimo_filtro_turnos = {"todos": False, "fecha": ""}
+filtros_por_numero = {}
+
+
+def ruta_agenda(remitente: str) -> str:
+  """Devuelve el Excel propio de cada número."""
+  numero = "".join(c for c in remitente.split("@")[0] if c.isdigit())
+  if not numero or numero == NUMERO_AGENDA_ORIGINAL:
+    return "turnos.xlsx"
+  return f"turnos_{numero}.xlsx"
+
+
+def filtro_de(remitente: str) -> dict:
+  """Último filtro de consulta de cada número (cada uno tiene el suyo)."""
+  return filtros_por_numero.setdefault(remitente, {"todos": False, "fecha": ""})
 
 
 def sin_tildes(texto: str) -> str:
@@ -179,8 +196,6 @@ def menu_continuar() -> str:
 
 
 def procesar_mensajes(mensajes):
-  global ultimo_filtro_turnos
-
   for msg_id, texto, remitente in mensajes:
     if (
         REMITENTES_AUTORIZADOS
@@ -210,6 +225,8 @@ def procesar_mensajes(mensajes):
         )
         continue
 
+      ruta = ruta_agenda(remitente)
+      ultimo_filtro_turnos = filtro_de(remitente)
       resultados = []
       for datos in operaciones:
         accion = datos.get("accion")
@@ -219,11 +236,11 @@ def procesar_mensajes(mensajes):
           ultimo_filtro_turnos["todos"] = False
           ultimo_filtro_turnos["fecha"] = fecha_dia
           resultados.append(
-              f"{abrir_dia(fecha_dia or None)}\n\n{menu_continuar()}"
+              f"{abrir_dia(fecha_dia or None, ruta_excel=ruta)}\n\n{menu_continuar()}"
           )
         elif accion == "cerrar_dia":
           fecha_dia = datos.get("fecha") or None
-          resultados.append(f"{cerrar_dia(fecha_dia)}\n\n{menu_continuar()}")
+          resultados.append(f"{cerrar_dia(fecha_dia, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "menu":
           resultados.append(menu_principal())
         elif accion == "cierre":
@@ -247,7 +264,7 @@ def procesar_mensajes(mensajes):
               " turno.\nEjemplo: cancelar turno de Juan mañana a las 15:00"
           )
         elif accion == "agendar":
-          resultados.append(f"{agendar_turno(datos)}\n\n{menu_continuar()}")
+          resultados.append(f"{agendar_turno(datos, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "consultar":
           pedir_todos = (
               str(datos.get("fecha") or "").strip().lower()
@@ -259,17 +276,17 @@ def procesar_mensajes(mensajes):
               "" if pedir_todos else (datos.get("fecha") or "")
           )
           resultados.append(
-              f"{consultar_turnos(datos.get('fecha'), todos=pedir_todos)}\n\n{menu_continuar()}"
+              f"{consultar_turnos(datos.get('fecha'), ruta_excel=ruta, todos=pedir_todos)}\n\n{menu_continuar()}"
           )
         elif accion == "cancelar":
-          resultados.append(f"{cancelar_turno(datos)}\n\n{menu_continuar()}")
+          resultados.append(f"{cancelar_turno(datos, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "realizado":
-          msg_realizado = marcar_corte_realizado(datos)
+          msg_realizado = marcar_corte_realizado(datos, ruta_excel=ruta)
           if ultimo_filtro_turnos["todos"]:
-            lista_restante = consultar_turnos(todos=True)
+            lista_restante = consultar_turnos(ruta_excel=ruta, todos=True)
           else:
             fecha_lista = ultimo_filtro_turnos["fecha"] or datos.get("fecha")
-            lista_restante = consultar_turnos(fecha_lista, todos=False)
+            lista_restante = consultar_turnos(fecha_lista, ruta_excel=ruta, todos=False)
           resultados.append(
               f"{msg_realizado}\n\n{lista_restante}\n\n{menu_continuar()}"
           )
@@ -280,7 +297,7 @@ def procesar_mensajes(mensajes):
               else (ultimo_filtro_turnos["fecha"] or None)
           )
           resultados.append(
-              f"{consultar_balance(fecha_bal)}\n\n{menu_continuar()}"
+              f"{consultar_balance(fecha_bal, ruta_excel=ruta)}\n\n{menu_continuar()}"
           )
         else:
           resultados.append(
@@ -304,7 +321,6 @@ def procesar_mensajes(mensajes):
 @app.route("/webhook", methods=["POST"])
 def recibir_mensaje_whatsapp():
   datos_recibidos = request.get_json(silent=True) or {}
-  print("📥 RECIBIDO:", str(datos_recibidos)[:600], flush=True)
 
   data = datos_recibidos.get("data")
   clave = data.get("key", {}) if isinstance(data, dict) else {}
