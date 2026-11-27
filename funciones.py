@@ -1,330 +1,384 @@
-import re
 from datetime import datetime
+import os
 import openpyxl
 
+COLUMNAS_TURNOS = [
+    "Fecha",
+    "Hora",
+    "Cliente",
+    "Servicio",
+    "Precio",
+    "Estado",
+]
 
-def _ahora():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def _abrir_excel_turnos(ruta_excel="turnos.xlsx"):
+  if not os.path.exists(ruta_excel):
+    libro = openpyxl.Workbook()
+    hoja = libro.active
+    hoja.title = "Turnos"
+    hoja.append(COLUMNAS_TURNOS)
+    libro.save(ruta_excel)
+    return libro, hoja
+
+  libro = openpyxl.load_workbook(ruta_excel)
+  hoja = libro.active
+  if hoja.max_row < 1 or hoja.cell(1, 1).value is None:
+    hoja.delete_rows(1, hoja.max_row + 1)
+    hoja.append(COLUMNAS_TURNOS)
+    libro.save(ruta_excel)
+  return libro, hoja
 
 
-# ---------------------------------------------------------------
-# CIERRE DEL DÍA
-# ---------------------------------------------------------------
-def obtener_resumen_cierre(ruta_excel, stock_actual: dict | None = None) -> str:
-    """Resumen del día: lo vendido, lo cobrado y lo que deben los clientes."""
-    hoy = datetime.now().strftime("%Y-%m-%d")
-
-    total_efectivo = 0
-    total_transferencia = 0
-    total_grandes = 0
-    total_chicos = 0
-    total_sifones = 0
-    total_envases_devueltos = 0
-    total_envases_prestados = 0
-    fiado_hoy = 0          # lo que quedó debiendo en las entregas de hoy
-    saldos = {}            # saldo acumulado de cada cliente (todo el historial)
-
+def _normalizar_fecha_excel(valor_fecha) -> str:
+  if isinstance(valor_fecha, datetime):
+    return valor_fecha.strftime("%d-%m-%y")
+  texto = str(valor_fecha or "").strip()
+  for fmt in ("%d-%m-%y", "%d/%m/%y", "%d-%m-%Y", "%d/%m/%Y"):
     try:
-        libro = openpyxl.load_workbook(ruta_excel, data_only=True)
-        hoja = libro.active
-
-        for fila in hoja.iter_rows(min_row=2, values_only=True):
-            if not fila or fila[0] is None:
-                continue
-
-            cobrado = fila[9] or 0
-            # Filas viejas sin "Total Pedido": se consideran pagadas completas
-            pedido = fila[10] if len(fila) > 10 and fila[10] is not None else cobrado
-            saldo_fila = pedido - cobrado
-
-            # Deuda acumulada por cliente (cuenta todos los días)
-            cliente = str(fila[1] or "").strip().title()
-            if cliente:
-                saldos[cliente] = saldos.get(cliente, 0) + saldo_fila
-
-            # Del resto solo cuenta lo de hoy
-            if not str(fila[0]).startswith(hoy):
-                continue
-
-            total_grandes += fila[2] or 0
-            total_chicos += fila[3] or 0
-            total_sifones += fila[4] or 0
-            total_envases_devueltos += fila[5] or 0
-            total_envases_prestados += fila[6] or 0
-
-            texto_pago = (str(fila[7] or "") + " " + str(fila[8] or "")).lower()
-            if "efectivo" in texto_pago:
-                total_efectivo += cobrado
-            elif "transfer" in texto_pago or "mp" in texto_pago.split():
-                total_transferencia += cobrado
-
-            if saldo_fila > 0:
-                fiado_hoy += saldo_fila
-    except Exception as e:
-        return f"⚠️ No pude leer el cierre de hoy: {e}"
-
-    recaudacion_total = total_efectivo + total_transferencia
-
-    texto = (
-        f"📊 *RESUMEN DEL CIERRE DE HOY ({hoy})*\n"
-        f"🔹 Grandes entregados: {total_grandes}\n"
-        f"🔹 Chicos entregados: {total_chicos}\n"
-        f"🔹 Sifones entregados: {total_sifones}\n"
-        f"🔹 Envases devueltos: {total_envases_devueltos}\n"
-        f"🔹 Envases prestados: {total_envases_prestados}\n"
-        f"───────────────\n"
-        f"💵 Efectivo: ${total_efectivo}\n"
-        f"💳 Transferencia/MP: ${total_transferencia}\n"
-        f"💰 Recaudación total: ${recaudacion_total}\n"
-        f"🧾 Quedó debiendo hoy: ${fiado_hoy}"
-    )
-
-    # Quiénes deben plata (de mayor a menor)
-    deudores = sorted(
-        ((nombre, s) for nombre, s in saldos.items() if s > 0),
-        key=lambda x: -x[1],
-    )
-    texto += "\n───────────────\n"
-    if deudores:
-        deuda_total = sum(s for _, s in deudores)
-        texto += f"📒 *Deuda total de clientes: ${deuda_total}*"
-        for nombre, s in deudores[:10]:
-            texto += f"\n• {nombre}: ${s}"
-        if len(deudores) > 10:
-            texto += f"\n…y {len(deudores) - 10} más."
-    else:
-        texto += "📒 Nadie debe plata 🎉"
-
-    if isinstance(stock_actual, dict):
-        texto += (
-            f"\n───────────────\n"
-            f"📦 Stock actual: {stock_actual.get('grandes', 0)} grandes, "
-            f"{stock_actual.get('chicos', 0)} chicos, {stock_actual.get('sifones', 0)} sifones."
-        )
-
-    return texto
-# ---------------------------------------------------------------
-# ENTREGAS Y COBROS
-# Columnas del Excel:
-#  1 Fecha  2 Cliente  3 Grandes  4 Chicos  5 Sifones  6 Devueltos
-#  7 Prestados  8 Estado Pago  9 Detalle Pago  10 Total Cobrado
-#  11 Total Pedido  12 Saldo Pendiente
-# ---------------------------------------------------------------
-def registrar_entrega(datos, stock_camioneta, ruta_excel="libro_diario.xlsx"):
-    grandes = int(datos.get("grandes_vendidos") or 0)
-    chicos = int(datos.get("chicos_vendidos") or 0)
-    sifones = int(datos.get("sifones_vendidos") or 0)
-    devueltos = int(datos.get("envases_devueltos") or 0)
-    prestados = int(datos.get("envases_prestados") or 0)
-    cliente = str(datos.get("cliente") or "").strip().title()
-
-    if not cliente or (grandes + chicos + sifones + devueltos + prestados) == 0:
-        return "❓ No pude registrar la entrega: falta el cliente o los productos."
-
-    total_cobrado = datos.get("total_cobrado") or 0
-    total_pedido = datos.get("total_pedido") or 0
-    sin_total = False
-    if total_pedido == 0:
-        # Si no dijo el total, asumimos que pagó todo lo que mencionó
-        total_pedido = total_cobrado
-        sin_total = (total_cobrado == 0)
-
-    saldo = total_pedido - total_cobrado
-
-    if (stock_camioneta["grandes"] >= grandes
-        and stock_camioneta["chicos"] >= chicos
-        and stock_camioneta["sifones"] >= sifones):
-        stock_camioneta["grandes"] -= grandes
-        stock_camioneta["chicos"] -= chicos
-        stock_camioneta["sifones"] -= sifones
-
-        libro = openpyxl.load_workbook(ruta_excel)
-        hoja = libro.active
-        hoja.append([
-            _ahora(),
-            cliente,
-            grandes, chicos, sifones,
-            devueltos,
-            prestados,
-            datos.get("estado_pago", ""),
-            datos.get("detalle_pago", ""),
-            total_cobrado,
-            total_pedido,
-            saldo,
-        ])
-        libro.save(ruta_excel)
-
-        mensaje = f"✅ Entrega de {cliente} registrada con éxito."
-        if saldo > 0:
-            mensaje += f"\n🧾 Quedó debiendo ${saldo}."
-        if sin_total:
-            mensaje += (
-                "\n⚠️ No me dijiste el total, así que no anoté deuda. "
-                "Si debe plata, mandá por ejemplo: dejé 3 grandes a Perez total 9000 pagó 5000"
-            )
-        return mensaje
-
-    return "❌ ¡ALERTA! Stock insuficiente en la camioneta."
+      return datetime.strptime(texto, fmt).strftime("%d-%m-%y")
+    except ValueError:
+      continue
+  return texto
 
 
-def registrar_cobro(datos, ruta_excel="libro_diario.xlsx"):
-    cliente = str(datos.get("cliente") or "").strip().title()
-    monto = datos.get("total_cobrado") or 0
-
-    if not cliente or monto <= 0:
-        return "❓ No pude registrar el cobro: falta el cliente o el monto."
-
-    libro = openpyxl.load_workbook(ruta_excel)
-    hoja = libro.active
-    hoja.append([
-        _ahora(), cliente, 0, 0, 0, 0, 0,
-        datos.get("estado_pago", ""),
-        datos.get("detalle_pago", ""),
-        monto,
-        0,
-        -monto,   # un cobro baja lo que el cliente debía
-    ])
-    libro.save(ruta_excel)
-    return f"✅ Cobro de ${monto} a {cliente} registrado."
+def _normalizar_hora_excel(valor_hora) -> str:
+  texto = str(valor_hora or "").strip()
+  for fmt in ("%H:%M", "%H:%M:%S"):
+    try:
+      return datetime.strptime(texto, fmt).strftime("%H:%M")
+    except ValueError:
+      continue
+  return texto
 
 
-# ---------------------------------------------------------------
-# DESHACER LA ÚLTIMA CARGA
-# ---------------------------------------------------------------
-def deshacer_ultimo(ruta_excel, stock_actual):
-    """Borra la última fila cargada y devuelve la mercadería al stock."""
-    libro = openpyxl.load_workbook(ruta_excel)
-    hoja = libro.active
+def agendar_turno(datos, ruta_excel="turnos.xlsx"):
+  libro, hoja = _abrir_excel_turnos(ruta_excel)
 
-    ultima = None
-    for n in range(hoja.max_row, 1, -1):
-        if hoja.cell(row=n, column=1).value is not None:
-            ultima = n
-            break
+  fecha = _normalizar_fecha_excel(
+      datos.get("fecha") or datetime.now().strftime("%d-%m-%y")
+  )
+  hora = _normalizar_hora_excel(datos.get("hora"))
+  cliente = str(datos.get("cliente") or "").strip().title()
+  servicio = str(datos.get("servicio") or "corte").strip() or "corte"
 
-    if ultima is None:
-        return "↩️ No hay nada para deshacer."
+  try:
+    precio = int(float(datos.get("precio", 10000)))
+  except (TypeError, ValueError):
+    precio = 10000
 
-    valores = [hoja.cell(row=ultima, column=c).value for c in range(1, 11)]
-    hoja.delete_rows(ultima)
-    libro.save(ruta_excel)
+  for fila in hoja.iter_rows(min_row=2, values_only=True):
+    if not fila:
+      continue
+    f_fecha = _normalizar_fecha_excel(fila[0])
+    f_hora = _normalizar_hora_excel(fila[1])
+    f_estado = str(fila[5] or "").strip().lower()
+    if f_fecha == fecha and f_hora == hora and f_estado == "agendado":
+      return (
+          f"⚠️ Ya hay un turno agendado el {fecha} a las {hora} ({fila[2]})."
+      )
 
-    cliente = valores[1] or "sin nombre"
-    grandes = int(valores[2] or 0)
-    chicos = int(valores[3] or 0)
-    sifones = int(valores[4] or 0)
-    monto = valores[9] or 0
+  hoja.append([fecha, hora, cliente, servicio, precio, "agendado"])
+  libro.save(ruta_excel)
 
-    stock_actual["grandes"] += grandes
-    stock_actual["chicos"] += chicos
-    stock_actual["sifones"] += sifones
-
-    partes = []
-    if grandes:
-        partes.append(f"{grandes} grandes")
-    if chicos:
-        partes.append(f"{chicos} chicos")
-    if sifones:
-        partes.append(f"{sifones} sifones")
-    detalle = ", ".join(partes) if partes else "cobro"
-
-    return (
-        f"↩️ Deshice la última carga: {cliente} ({detalle}, ${monto}).\n"
-        f"📦 Stock actual: {stock_actual['grandes']} grandes, "
-        f"{stock_actual['chicos']} chicos, {stock_actual['sifones']} sifones."
-    )
+  return (
+      f"✅ Turno agendado para {cliente}: {fecha} a las {hora} "
+      f"({servicio}, ${precio})."
+  )
 
 
-# ---------------------------------------------------------------
-# SALDO DE UN CLIENTE
-# ---------------------------------------------------------------
-def obtener_saldo_cliente(ruta_excel, nombre):
-    """Cuánta plata debe un cliente y cuántos envases tiene sin devolver."""
-    buscado = nombre.strip().lower()
-    if not buscado:
-        return "❓ Decime el cliente. Ejemplo: debe Perez"
+def consultar_turnos(
+    fecha=None, ruta_excel="turnos.xlsx", todos: bool = False
+):
+  if not os.path.exists(ruta_excel):
+    return "📅 Todavía no hay turnos agendados."
 
-    libro = openpyxl.load_workbook(ruta_excel, data_only=True)
-    hoja = libro.active
+  libro, hoja = _abrir_excel_turnos(ruta_excel)
+  es_todos = todos or (
+      str(fecha or "").strip().lower() in {"todos", "todo", "ver todos"}
+  )
+  turnos = []
 
-    pedido_total = 0
-    cobrado_total = 0
-    prestados = 0
-    devueltos = 0
-    encontrado = False
-
+  if es_todos:
     for fila in hoja.iter_rows(min_row=2, values_only=True):
-        if not fila or fila[1] is None:
-            continue
-        if str(fila[1]).strip().lower() != buscado:
-            continue
+      if fila and str(fila[5] or "").strip().lower() == "agendado":
+        turnos.append((
+            _normalizar_fecha_excel(fila[0]),
+            _normalizar_hora_excel(fila[1]),
+            str(fila[2] or "").strip(),
+            str(fila[3] or "corte").strip(),
+            fila[4] if fila[4] is not None else 10000,
+        ))
 
-        encontrado = True
-        cobrado = fila[9] or 0
-        # Filas viejas sin "Total Pedido": se consideran pagadas completas
-        pedido = fila[10] if len(fila) > 10 and fila[10] is not None else cobrado
+    if not turnos:
+      return "📅 No hay turnos agendados."
 
-        pedido_total += pedido
-        cobrado_total += cobrado
-        prestados += fila[6] or 0
-        devueltos += fila[5] or 0
+    turnos.sort(key=lambda item: (item[0], item[1]))
+    lineas = ["📅 *Todos los turnos agendados:*"]
+    for f_fecha, f_hora, f_cliente, f_servicio, f_precio in turnos:
+      lineas.append(
+          f"• {f_fecha} {f_hora} — {f_cliente} ({f_servicio}, ${f_precio})"
+      )
+    return "\n".join(lineas)
 
-    nombre_lindo = nombre.strip().title()
-    if not encontrado:
-        return f"❓ No encontré movimientos de {nombre_lindo}."
+  fecha_objetivo = _normalizar_fecha_excel(
+      fecha or datetime.now().strftime("%d-%m-%y")
+  )
+  for fila in hoja.iter_rows(min_row=2, values_only=True):
+    if (
+        fila
+        and _normalizar_fecha_excel(fila[0]) == fecha_objetivo
+        and str(fila[5] or "").strip().lower() == "agendado"
+    ):
+      turnos.append((
+          _normalizar_hora_excel(fila[1]),
+          str(fila[2] or "").strip(),
+          str(fila[3] or "corte").strip(),
+          fila[4] if fila[4] is not None else 10000,
+      ))
 
-    deuda = pedido_total - cobrado_total
-    envases = max(prestados - devueltos, 0)
+  if not turnos:
+    return f"📅 No hay turnos agendados para el {fecha_objetivo}."
 
-    if deuda > 0:
-        linea_plata = f"💰 Debe: ${deuda}"
-    elif deuda < 0:
-        linea_plata = f"💰 Tiene ${-deuda} a favor"
-    else:
-        linea_plata = "💰 Está al día"
+  turnos.sort(key=lambda item: item[0])
+  lineas = [f"📅 *Turnos del {fecha_objetivo}:*"]
+  for f_hora, f_cliente, f_servicio, f_precio in turnos:
+    lineas.append(f"• {f_hora} — {f_cliente} ({f_servicio}, ${f_precio})")
 
+  return "\n".join(lineas)
+
+
+def cancelar_turno(datos, ruta_excel="turnos.xlsx"):
+  if not os.path.exists(ruta_excel):
+    return "📅 No hay turnos agendados para cancelar."
+
+  libro, hoja = _abrir_excel_turnos(ruta_excel)
+  cliente = str(datos.get("cliente") or "").strip().lower()
+  fecha = (
+      _normalizar_fecha_excel(datos.get("fecha")) if datos.get("fecha") else ""
+  )
+  hora = _normalizar_hora_excel(datos.get("hora")) if datos.get("hora") else ""
+
+  coincidencias = []
+  for numero_fila in range(2, hoja.max_row + 1):
+    fila = [hoja.cell(numero_fila, col).value for col in range(1, 7)]
+    if not fila or str(fila[5] or "").strip().lower() != "agendado":
+      continue
+    if cliente and cliente not in str(fila[2] or "").strip().lower():
+      continue
+    if fecha and fecha != _normalizar_fecha_excel(fila[0]):
+      continue
+    if hora and hora != _normalizar_hora_excel(fila[1]):
+      continue
+    coincidencias.append((numero_fila, fila))
+
+  if not coincidencias:
+    return "❓ No encontré un turno agendado coincidente para cancelar."
+
+  if len(coincidencias) > 1 and not (cliente and fecha and hora):
     return (
-        f"📒 Saldo de {nombre_lindo}:\n"
-        f"{linea_plata}\n"
-        f"📦 Envases prestados sin devolver: {envases}"
+        "❓ Hay más de un turno coincidente. Indicame el nombre, fecha y/o hora"
+        " para cancelar."
     )
 
+  numero_fila, fila = coincidencias[0]
+  hoja.cell(numero_fila, 6).value = "cancelado"
+  libro.save(ruta_excel)
 
-# ---------------------------------------------------------------
-# STOCK
-# ---------------------------------------------------------------
-def interpretar_stock(texto):
-    """
-    Devuelve None si no es un mensaje de stock.
-    Si lo es, devuelve un dict con:
-      - "modo": "consultar" | "sumar" | "fijar"
-      - "valores": {"grandes": int, "chicos": int, "sifones": int} (vacío si es consultar)
-    """
-    t = " ".join(texto.lower().strip().split())
+  return (
+      f"🗑️ Turno cancelado para {fila[2]} "
+      f"({_normalizar_fecha_excel(fila[0])} {_normalizar_hora_excel(fila[1])})."
+  )
 
-    if t.startswith("fijar stock"):
-        resto = t[len("fijar stock"):].strip()
-        modo = "fijar"
-    elif t.startswith("stock"):
-        resto = t[len("stock"):].strip()
-        modo = "sumar"
-    else:
-        return None
 
-    if not resto:
-        return {"modo": "consultar", "valores": {}}
+def marcar_corte_realizado(datos, ruta_excel="turnos.xlsx"):
+  if not os.path.exists(ruta_excel):
+    return "📅 No hay turnos agendados para marcar como realizados."
 
-    def buscar(nombre):
-        m = re.search(rf"(\d+)\s*(?:bidones?\s+)?{nombre}", resto)
-        return int(m.group(1)) if m else 0
+  libro, hoja = _abrir_excel_turnos(ruta_excel)
+  cliente = str(datos.get("cliente") or "").strip().lower()
+  fecha = (
+      _normalizar_fecha_excel(datos.get("fecha")) if datos.get("fecha") else ""
+  )
+  hora = _normalizar_hora_excel(datos.get("hora")) if datos.get("hora") else ""
 
-    valores = {
-        "grandes": buscar(r"grandes?"),
-        "chicos": buscar(r"chicos?"),
-        "sifones": buscar(r"sifones?"),
-    }
+  coincidencias = []
+  for numero_fila in range(2, hoja.max_row + 1):
+    fila = [hoja.cell(numero_fila, col).value for col in range(1, 7)]
+    if not fila or str(fila[5] or "").strip().lower() != "agendado":
+      continue
+    if cliente and cliente not in str(fila[2] or "").strip().lower():
+      continue
+    if hora and hora != _normalizar_hora_excel(fila[1]):
+      continue
+    if fecha and cliente and fecha != _normalizar_fecha_excel(fila[0]):
+      continue
+    coincidencias.append((numero_fila, fila))
 
-    if all(v == 0 for v in valores.values()):
-        return {"modo": "consultar", "valores": {}}
+  if not coincidencias and not cliente and not hora:
+    for numero_fila in range(hoja.max_row, 1, -1):
+      fila = [hoja.cell(numero_fila, col).value for col in range(1, 7)]
+      if fila and str(fila[5] or "").strip().lower() == "agendado":
+        coincidencias.append((numero_fila, fila))
+        break
 
-    return {"modo": modo, "valores": valores}
+  if not coincidencias:
+    return (
+        "❓ No encontré un turno agendado coincidente para marcar como"
+        " realizado."
+    )
+
+  if len(coincidencias) > 1 and not (cliente and hora):
+    return (
+        "❓ Hay más de un turno coincidente. Indicame el nombre y/o la hora del"
+        " corte."
+    )
+
+  numero_fila, fila = coincidencias[-1]
+  precio_override = datos.get("precio")
+  precio_final = (
+      precio_override
+      if precio_override not in (None, "", 0)
+      else (fila[4] if fila[4] is not None else 10000)
+  )
+
+  hoja.cell(numero_fila, 5).value = precio_final
+  hoja.cell(numero_fila, 6).value = "realizado"
+  libro.save(ruta_excel)
+
+  return (
+      f"✂️ Corte de {fila[2]} ({_normalizar_fecha_excel(fila[0])}"
+      f" {_normalizar_hora_excel(fila[1])}) marcado como realizado por"
+      f" ${precio_final}."
+  )
+def consultar_balance(fecha=None, ruta_excel="turnos.xlsx"):
+  if not os.path.exists(ruta_excel):
+    return "💰 Todavía no tenés cortes realizados ni turnos registrados."
+
+  libro, hoja = _abrir_excel_turnos(ruta_excel)
+  fecha_dia = _normalizar_fecha_excel(
+      fecha or datetime.now().strftime("%d-%m-%y")
+  )
+
+  realizado_dia = 0.0
+  cant_realizado_dia = 0
+  pendiente_dia = 0.0
+  cant_pendiente_dia = 0
+
+  realizado_total = 0.0
+  cant_realizado_total = 0
+  pendiente_total = 0.0
+  cant_pendiente_total = 0
+
+  for fila in hoja.iter_rows(min_row=2, values_only=True):
+    if not fila or fila[2] is None:
+      continue
+    estado = str(fila[5] or "").strip().lower()
+    try:
+      monto = float(fila[4] if fila[4] is not None else 0)
+    except (TypeError, ValueError):
+      monto = 0.0
+
+    es_del_dia = _normalizar_fecha_excel(fila[0]) == fecha_dia
+
+    if estado == "realizado":
+      realizado_total += monto
+      cant_realizado_total += 1
+      if es_del_dia:
+        realizado_dia += monto
+        cant_realizado_dia += 1
+    elif estado == "agendado":
+      pendiente_total += monto
+      cant_pendiente_total += 1
+      if es_del_dia:
+        pendiente_dia += monto
+        cant_pendiente_dia += 1
+
+  def _fmt(num: float):
+    return int(num) if num.is_integer() else round(num, 2)
+
+  return (
+      f"💰 *Balance del día ({fecha_dia}):*\n"
+      f"• Cortes realizados: {cant_realizado_dia} (${_fmt(realizado_dia)})\n"
+      f"• Turnos pendientes: {cant_pendiente_dia} (${_fmt(pendiente_dia)})\n\n"
+      "📊 *Balance total acumulado:*\n"
+      f"• Cortes realizados: {cant_realizado_total} (${_fmt(realizado_total)})\n"
+      f"• Turnos pendientes: {cant_pendiente_total} (${_fmt(pendiente_total)})"
+  )
+def abrir_dia(fecha=None, ruta_excel="turnos.xlsx"):
+  fecha_objetivo = _normalizar_fecha_excel(
+      fecha or datetime.now().strftime("%d-%m-%y")
+  )
+  agenda = consultar_turnos(fecha=fecha_objetivo, ruta_excel=ruta_excel)
+  return f"🌅 *Apertura del día ({fecha_objetivo}):*\n\n{agenda}"
+
+def _resolver_ruta_excel(ruta_excel=None) -> str:
+  if isinstance(ruta_excel, (str, bytes, os.PathLike)):
+    ruta_str = os.fspath(ruta_excel)
+    if isinstance(ruta_str, bytes):
+      ruta_str = ruta_str.decode("utf-8", errors="ignore")
+    if str(ruta_str).strip():
+      return str(ruta_str).strip()
+  return "turnos.xlsx"
+def cerrar_dia(fecha=None, ruta_excel="turnos.xlsx"):
+  fecha_objetivo = _normalizar_fecha_excel(
+      fecha or datetime.now().strftime("%d-%m-%y")
+  )
+
+  if not os.path.exists(ruta_excel):
+    return (
+        f"🌙 *Cierre del día ({fecha_objetivo}):*\n"
+        "• Cortes realizados: 0 ($0)\n"
+        "• Turnos pendientes: 0 ($0)\n"
+        "• Turnos cancelados: 0"
+    )
+
+  _, hoja = _abrir_excel_turnos(ruta_excel)
+
+  realizados = []
+  pendientes = []
+  cancelados = 0
+  total_dia = 0.0
+
+  for fila in hoja.iter_rows(min_row=2, values_only=True):
+    if not fila or fila[2] is None:
+      continue
+    if _normalizar_fecha_excel(fila[0]) != fecha_objetivo:
+      continue
+
+    hora_f = _normalizar_hora_excel(fila[1])
+    cliente_f = str(fila[2] or "").strip()
+    estado_f = str(fila[5] or "").strip().lower()
+    try:
+      monto_f = float(fila[4] if fila[4] is not None else 10000)
+    except (TypeError, ValueError):
+      monto_f = 10000.0
+
+    if estado_f == "realizado":
+      realizados.append((hora_f, cliente_f, monto_f))
+      total_dia += monto_f
+    elif estado_f == "agendado":
+      pendientes.append((hora_f, cliente_f, monto_f))
+    elif estado_f == "cancelado":
+      cancelados += 1
+
+  realizados.sort(key=lambda item: item[0])
+  pendientes.sort(key=lambda item: item[0])
+
+  total_fmt = (
+      int(total_dia) if total_dia.is_integer() else round(total_dia, 2)
+  )
+
+  lineas = [
+      f"🌙 *Cierre del día ({fecha_objetivo}):*",
+      f"• Cortes realizados: {len(realizados)} (${total_fmt})",
+      f"• Turnos pendientes: {len(pendientes)}",
+      f"• Turnos cancelados: {cancelados}",
+  ]
+
+  if pendientes:
+    lineas.append("\n⚠️ *Quedaron sin marcar como realizados:*")
+    for h, c, _ in pendientes:
+      lineas.append(f"  - {h} — {c}")
+
+  return "\n".join(lineas)
