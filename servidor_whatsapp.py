@@ -20,8 +20,8 @@ import requests
 app = Flask(__name__)
 LOCK = threading.Lock()
 
-EVOLUTION_URL = os.getenv("EVOLUTION_URL", "http://localhost:8080").rstrip("/")
-EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "Benicio Sturla")
+EVOLUTION_URL = os.getenv("EVOLUTION_URL", "").rstrip("/")
+EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 EVOLUTION_APIKEY = os.getenv("EVOLUTION_APIKEY", "")
 
 REMITENTES_AUTORIZADOS = {"5491176361030@s.whatsapp.net"}
