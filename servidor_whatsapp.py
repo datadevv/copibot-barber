@@ -24,39 +24,38 @@ EVOLUTION_URL = os.getenv("EVOLUTION_URL", "").rstrip("/")
 EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 EVOLUTION_APIKEY = os.getenv("EVOLUTION_APIKEY", "")
 
-LIMITE_ANTIGUEDAD_SEG = int(os.getenv("LIMITE_ANTIGUEDAD_SEG", "600"))
+# Segundos máximos de antigüedad de un mensaje para procesarlo. Sirve para
+# atender los mensajes que llegaron mientras Render estaba despertando.
+MAX_ANTIGUEDAD_SEG = 300
 
 
-def normalizar_numero(valor: str) -> str:
-  base = (valor or "").split("@")[0]
-  return "".join(c for c in base if c.isdigit())
+def _leer_autorizados() -> set:
+  """Lee los números permitidos de la variable REMITENTES_AUTORIZADOS.
 
-
-def cargar_remitentes_autorizados() -> set[str]:
-  raw = os.getenv("BARBEROS_NUMEROS", "")
+  En Render: REMITENTES_AUTORIZADOS = 5491100000000,5491100000001
+  (solo números, separados por coma).
+  """
+  crudo = os.getenv("REMITENTES_AUTORIZADOS", "")
   autorizados = set()
-  for parte in raw.split(","):
-    num = normalizar_numero(parte)
-    if num:
-      autorizados.add(f"{num}@s.whatsapp.net")
+  for parte in crudo.split(","):
+    numero = "".join(c for c in parte if c.isdigit())
+    if numero:
+      autorizados.add(f"{numero}@s.whatsapp.net")
   return autorizados
 
 
-REMITENTES_AUTORIZADOS = cargar_remitentes_autorizados()
-NUMERO_AGENDA_ORIGINAL = normalizar_numero(
-    os.getenv("NUMERO_AGENDA_ORIGINAL", "5491176361030")
-)
+REMITENTES_AUTORIZADOS = _leer_autorizados()
 
 mensajes_vistos = set()
 filtros_por_numero = {}
 
 
-def clave_hoja_numero(remitente: str) -> str:
-  """Devuelve el identificador de pestaña/agenda propio de cada número."""
-  numero = normalizar_numero(remitente)
-  if not numero or numero == NUMERO_AGENDA_ORIGINAL:
-    return "turnos"
-  return f"turnos_{numero}"
+def ruta_agenda(remitente: str) -> str:
+  """Devuelve la agenda propia de cada número (una pestaña / un Excel)."""
+  numero = "".join(c for c in remitente.split("@")[0] if c.isdigit())
+  if not numero:
+    return "turnos.xlsx"
+  return f"turnos_{numero}.xlsx"
 
 
 def filtro_de(remitente: str) -> dict:
@@ -89,7 +88,7 @@ def enviar_whatsapp(remitente: str, texto: str) -> None:
     )
     return
 
-  numero = normalizar_numero(remitente)
+  numero = remitente.split("@")[0]
   url = f"{EVOLUTION_URL}/message/sendText/{quote(EVOLUTION_INSTANCE)}"
   headers = {
       "apikey": EVOLUTION_APIKEY,
@@ -163,6 +162,8 @@ def extraer_mensajes_nuevos(payload: dict) -> list[tuple[str, str, str]]:
       continue
 
     remitente = key.get("remoteJid") or ""
+    # WhatsApp a veces manda un ID interno (@lid) en vez del número real.
+    # El número real viene en remoteJidAlt.
     if remitente.endswith("@lid"):
       remitente = key.get("remoteJidAlt") or remitente
     if not es_chat_valido(remitente):
@@ -173,7 +174,7 @@ def extraer_mensajes_nuevos(payload: dict) -> list[tuple[str, str, str]]:
       continue
 
     ts = item.get("messageTimestamp")
-    if isinstance(ts, (int, float)) and (ahora - ts) > LIMITE_ANTIGUEDAD_SEG:
+    if isinstance(ts, (int, float)) and (ahora - ts) > MAX_ANTIGUEDAD_SEG:
       continue
 
     mensaje = item.get("message") or {}
@@ -213,11 +214,7 @@ def menu_continuar() -> str:
 
 def procesar_mensajes(mensajes):
   for msg_id, texto, remitente in mensajes:
-    remitente_limpio = remitente.strip().lower()
-    if remitente_limpio.endswith("@lid"):
-      remitente_limpio = remitente_limpio
-
-    if REMITENTES_AUTORIZADOS and remitente_limpio not in REMITENTES_AUTORIZADOS:
+    if remitente.strip().lower() not in REMITENTES_AUTORIZADOS:
       print("🚫 Remitente no autorizado", flush=True)
       continue
 
@@ -242,7 +239,7 @@ def procesar_mensajes(mensajes):
         )
         continue
 
-      hoja_clave = clave_hoja_numero(remitente)
+      ruta = ruta_agenda(remitente)
       ultimo_filtro_turnos = filtro_de(remitente)
       resultados = []
       for datos in operaciones:
@@ -253,13 +250,11 @@ def procesar_mensajes(mensajes):
           ultimo_filtro_turnos["todos"] = False
           ultimo_filtro_turnos["fecha"] = fecha_dia
           resultados.append(
-              f"{abrir_dia(fecha_dia or None, ruta_excel=hoja_clave)}\n\n{menu_continuar()}"
+              f"{abrir_dia(fecha_dia or None, ruta_excel=ruta)}\n\n{menu_continuar()}"
           )
         elif accion == "cerrar_dia":
           fecha_dia = datos.get("fecha") or None
-          resultados.append(
-              f"{cerrar_dia(fecha_dia, ruta_excel=hoja_clave)}\n\n{menu_continuar()}"
-          )
+          resultados.append(f"{cerrar_dia(fecha_dia, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "menu":
           resultados.append(menu_principal())
         elif accion == "cierre":
@@ -283,9 +278,7 @@ def procesar_mensajes(mensajes):
               " turno.\nEjemplo: cancelar turno de Juan mañana a las 15:00"
           )
         elif accion == "agendar":
-          resultados.append(
-              f"{agendar_turno(datos, ruta_excel=hoja_clave)}\n\n{menu_continuar()}"
-          )
+          resultados.append(f"{agendar_turno(datos, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "consultar":
           pedir_todos = (
               str(datos.get("fecha") or "").strip().lower()
@@ -297,23 +290,17 @@ def procesar_mensajes(mensajes):
               "" if pedir_todos else (datos.get("fecha") or "")
           )
           resultados.append(
-              f"{consultar_turnos(datos.get('fecha'), ruta_excel=hoja_clave, todos=pedir_todos)}\n\n{menu_continuar()}"
+              f"{consultar_turnos(datos.get('fecha'), ruta_excel=ruta, todos=pedir_todos)}\n\n{menu_continuar()}"
           )
         elif accion == "cancelar":
-          resultados.append(
-              f"{cancelar_turno(datos, ruta_excel=hoja_clave)}\n\n{menu_continuar()}"
-          )
+          resultados.append(f"{cancelar_turno(datos, ruta_excel=ruta)}\n\n{menu_continuar()}")
         elif accion == "realizado":
-          msg_realizado = marcar_corte_realizado(datos, ruta_excel=hoja_clave)
+          msg_realizado = marcar_corte_realizado(datos, ruta_excel=ruta)
           if ultimo_filtro_turnos["todos"]:
-            lista_restante = consultar_turnos(
-                ruta_excel=hoja_clave, todos=True
-            )
+            lista_restante = consultar_turnos(ruta_excel=ruta, todos=True)
           else:
             fecha_lista = ultimo_filtro_turnos["fecha"] or datos.get("fecha")
-            lista_restante = consultar_turnos(
-                fecha_lista, ruta_excel=hoja_clave, todos=False
-            )
+            lista_restante = consultar_turnos(fecha_lista, ruta_excel=ruta, todos=False)
           resultados.append(
               f"{msg_realizado}\n\n{lista_restante}\n\n{menu_continuar()}"
           )
@@ -324,7 +311,7 @@ def procesar_mensajes(mensajes):
               else (ultimo_filtro_turnos["fecha"] or None)
           )
           resultados.append(
-              f"{consultar_balance(fecha_bal, ruta_excel=hoja_clave)}\n\n{menu_continuar()}"
+              f"{consultar_balance(fecha_bal, ruta_excel=ruta)}\n\n{menu_continuar()}"
           )
         else:
           resultados.append(
@@ -378,6 +365,12 @@ def recibir_mensaje_whatsapp():
 
 
 if __name__ == "__main__":
+  if not REMITENTES_AUTORIZADOS:
+    print(
+        "⚠️ No hay números autorizados. Cargá la variable de entorno "
+        "REMITENTES_AUTORIZADOS (números separados por coma).",
+        flush=True,
+    )
   print(
       "🚀 Servidor de turnos escuchando mensajes de Evolution API...",
       flush=True,
