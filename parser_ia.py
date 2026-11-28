@@ -50,7 +50,7 @@ SCHEMA_TURNO = types.Schema(
         ),
         "servicio": types.Schema(
             type=types.Type.STRING,
-            enum=["corte", ""],
+            enum=["corte"],
             description="Servicio solicitado.",
         ),
         "precio": types.Schema(
