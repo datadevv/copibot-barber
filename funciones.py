@@ -456,4 +456,6 @@ def cerrar_dia(fecha=None, ruta_excel="turnos"):
             estado_f = str(fila[5] or "").strip().lower()
             try:
                 monto_f = float(fila[4] if fila[4] != "" else 10000)
-            except (TypeError,
+            except (TypeError,ValueError):
+                monto_f = 10000.0
+            
