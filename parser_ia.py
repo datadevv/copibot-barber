@@ -155,7 +155,7 @@ def interpretar_mensaje(texto: str) -> list[dict]:
     return [{"accion": opciones[normalizado]}]
 
   api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-  modelo = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+  modelo = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
   try:
     if api_key:
