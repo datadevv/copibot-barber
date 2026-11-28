@@ -2,6 +2,7 @@ flask
 requests
 openpyxl
 google-genai
+gspread>=6.0,<7
+tzdata
 gunicorn
-gspread
-google-auth
+ 
