@@ -3,3 +3,5 @@ requests
 openpyxl
 google-genai
 gunicorn
+gspread
+google-auth
