@@ -1,9 +1,5 @@
 from datetime import datetime, timedelta
 import re
-import unicodedata
-from zoneinfo import ZoneInfo
-
-TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 PALABRAS_NO_NOMBRE = {
     "el",
@@ -30,32 +26,10 @@ PALABRAS_NO_NOMBRE = {
     "corte",
     "realizado",
     "todos",
-    "lunes",
-    "martes",
-    "miercoles",
-    "jueves",
-    "viernes",
-    "sabado",
-    "domingo",
+    "cancelar",
+    "cancela",
+    "cancelo",
 }
-
-DIAS_SEMANA_IDX = {
-    "lunes": 0,
-    "martes": 1,
-    "miercoles": 2,
-    "jueves": 3,
-    "viernes": 4,
-    "sabado": 5,
-    "domingo": 6,
-}
-
-
-def _sin_tildes(texto: str) -> str:
-  return "".join(
-      c
-      for c in unicodedata.normalize("NFD", texto)
-      if unicodedata.category(c) != "Mn"
-  )
 
 
 def _resolver_fecha(texto_bajo: str, hoy: datetime) -> tuple[str, str]:
@@ -96,40 +70,14 @@ def _resolver_fecha(texto_bajo: str, hoy: datetime) -> tuple[str, str]:
         mes = hoy.month % 12 + 1
         anio = hoy.year + (1 if hoy.month == 12 else 0)
         candidata = datetime(anio, mes, dia)
-      texto_limpio = (
-          texto_bajo[: m_dia.start()] + " " + texto_bajo[m_dia.end() :]
-      )
+      texto_limpio = texto_bajo[: m_dia.start()] + " " + texto_bajo[m_dia.end():]
       return candidata.strftime("%d-%m-%y"), texto_limpio
     except ValueError:
       pass
-
   if "pasado mañana" in texto_bajo or "pasado manana" in texto_bajo:
-    texto_limpio = re.sub(r"\bpasado\s+ma[nñ]ana\b", " ", texto_bajo)
-    return (hoy + timedelta(days=2)).strftime("%d-%m-%y"), texto_limpio
-
+    return (hoy + timedelta(days=2)).strftime("%d-%m-%y"), texto_bajo
   if "mañana" in texto_bajo or "manana" in texto_bajo:
-    texto_limpio = re.sub(r"\bma[nñ]ana\b", " ", texto_bajo)
-    return (hoy + timedelta(days=1)).strftime("%d-%m-%y"), texto_limpio
-
-  if "hoy" in texto_bajo:
-    texto_limpio = re.sub(r"\bhoy\b", " ", texto_bajo)
-    return hoy.strftime("%d-%m-%y"), texto_limpio
-
-  m_semana = re.search(
-      r"\b(?:el\s+|este\s+)?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)(?:\s+que\s+viene)?\b",
-      texto_bajo,
-  )
-  if m_semana:
-    objetivo_idx = DIAS_SEMANA_IDX[m_semana.group(1)]
-    dias_adelante = (objetivo_idx - hoy.weekday()) % 7
-    if dias_adelante == 0:
-      dias_adelante = 7
-    fecha_obj = hoy + timedelta(days=dias_adelante)
-    texto_limpio = (
-        texto_bajo[: m_semana.start()] + " " + texto_bajo[m_semana.end() :]
-    )
-    return fecha_obj.strftime("%d-%m-%y"), texto_limpio
-
+    return (hoy + timedelta(days=1)).strftime("%d-%m-%y"), texto_bajo
   return hoy.strftime("%d-%m-%y"), texto_bajo
 
 
@@ -173,10 +121,20 @@ def _limpiar_nombre(candidato: str) -> str:
   return " ".join(partes[:2]).title()
 
 
+def _sin_tildes(texto: str) -> str:
+  import unicodedata
+
+  return "".join(
+      c
+      for c in unicodedata.normalize("NFD", texto)
+      if unicodedata.category(c) != "Mn"
+  )
+
+
 def interpretar_turno_basico(texto: str) -> list[dict]:
   texto_original = (texto or "").strip()
   texto_bajo = re.sub(r"\s+", " ", _sin_tildes(texto_original.lower())).strip()
-  hoy = datetime.now(TZ)
+  hoy = datetime.now()
 
   if texto_bajo in {
       "listo",
@@ -281,6 +239,95 @@ def interpretar_turno_basico(texto: str) -> list[dict]:
   if not cliente and accion in {"agendar", "cancelar"}:
     m_inicio = re.match(
         r"^([a-z]+(?:\s+[a-z]+)?)\s+(?:el\b|hoy\b|manana\b|pasado\b|a\s+las\b|\d)",
+        texto_sin_fecha,
+    )
+    if m_inicio:
+      cliente = _limpiar_nombre(m_inicio.group(1))
+
+  coincidencia_precio = re.search(
+      r"(?:precio|cobra|cobrar|sale)\s*(?:de|a)?\s*\$?\s*([\d.]+)|\$\s*([\d.]+)",
+      texto_bajo,
+  )
+  precio = 10000
+  if coincidencia_precio:
+    valor = coincidencia_precio.group(1) or coincidencia_precio.group(2)
+    precio = int(valor.replace(".", ""))
+
+  if accion == "agendar" and (not cliente or not hora):
+    accion = "desconocido"
+
+  return [{
+      "accion": accion,
+      "cliente": cliente,
+      "fecha": fecha_str,
+      "hora": hora,
+      "servicio": "corte",
+      "precio": precio,
+  }]
+  if any(
+      frase in texto_bajo
+      for frase in (
+          "realice el corte",
+          "realicé el corte",
+          "realice corte",
+          "realicé corte",
+          "reakice corte",
+          "corte realizado",
+          "ya corte",
+          "ya corté",
+          "termine el corte",
+          "terminé el corte",
+          "termine corte",
+          "terminé corte",
+          "listo el corte",
+          "hice el corte",
+          "hice corte",
+      )
+  ):
+    accion = "realizado"
+  elif "cancelar" in texto_bajo or "cancela" in texto_bajo:
+    accion = "cancelar"
+  elif any(
+      p in texto_bajo
+      for p in (
+          "consultar",
+          "qué turnos",
+          "que turnos",
+          "mi agenda",
+          "todos",
+          "ver todos",
+      )
+  ):
+    accion = "consultar"
+  else:
+    accion = "agendar"
+
+  if accion == "consultar" and any(
+      p in texto_bajo for p in ("todos", "ver todos")
+  ):
+    fecha_str = "todos"
+
+  hora = _extraer_hora(texto_sin_fecha)
+
+  cliente = ""
+  coincidencia_cliente = re.search(
+      r"\b(?:para|con|de)\s+([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}?)(?=\s+(?:el\b|la\b|hoy\b|mañana\b|manana\b|pasado\b|a\s+las\b|\d)|$)",
+      texto_sin_fecha,
+  )
+  if coincidencia_cliente:
+    cliente = _limpiar_nombre(coincidencia_cliente.group(1))
+
+  if not cliente and accion == "realizado":
+    m_realizado = re.search(
+        r"\b(?:corte\s+realizado|realic[eé]\s+(?:el\s+)?corte|reakice\s+(?:el\s+)?corte|ya\s+cort[eé]|hice\s+(?:el\s+)?corte|termin[eé]\s+(?:el\s+)?corte)\s+(?:a\s+|de\s+|del\s+|para\s+|con\s+)?([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)",
+        texto_sin_fecha,
+    )
+    if m_realizado:
+      cliente = _limpiar_nombre(m_realizado.group(1))
+
+  if not cliente and accion in {"agendar", "cancelar"}:
+    m_inicio = re.match(
+        r"^([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?)\s+(?:el\b|hoy\b|mañana\b|manana\b|pasado\b|a\s+las\b|\d)",
         texto_sin_fecha,
     )
     if m_inicio:
