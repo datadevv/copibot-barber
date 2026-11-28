@@ -1,5 +1,18 @@
 from datetime import datetime, timedelta
 import re
+from zoneinfo import ZoneInfo
+
+TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+
+DIAS_SEMANA = {
+    "lunes": 0,
+    "martes": 1,
+    "miercoles": 2,
+    "jueves": 3,
+    "viernes": 4,
+    "sabado": 5,
+    "domingo": 6,
+}
 
 PALABRAS_NO_NOMBRE = {
     "el",
@@ -29,6 +42,13 @@ PALABRAS_NO_NOMBRE = {
     "cancelar",
     "cancela",
     "cancelo",
+    "lunes",
+    "martes",
+    "miercoles",
+    "jueves",
+    "viernes",
+    "sabado",
+    "domingo",
 }
 
 
@@ -78,12 +98,35 @@ def _resolver_fecha(texto_bajo: str, hoy: datetime) -> tuple[str, str]:
     return (hoy + timedelta(days=2)).strftime("%d-%m-%y"), texto_bajo
   if "mañana" in texto_bajo or "manana" in texto_bajo:
     return (hoy + timedelta(days=1)).strftime("%d-%m-%y"), texto_bajo
+
+  m_semana = re.search(
+      r"\b(?:el\s+)?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b",
+      texto_bajo,
+  )
+  if m_semana:
+    objetivo = DIAS_SEMANA[m_semana.group(1)]
+    dias = (objetivo - hoy.weekday()) % 7 or 7
+    texto_limpio = (
+        texto_bajo[: m_semana.start()] + " " + texto_bajo[m_semana.end() :]
+    )
+    return (hoy + timedelta(days=dias)).strftime("%d-%m-%y"), texto_limpio
+
   return hoy.strftime("%d-%m-%y"), texto_bajo
 
 
 def _extraer_hora(texto_sin_fecha: str) -> str:
+  m_ampm = re.search(
+      r"\b(1[0-2]|0?[1-9])(?:\s*:\s*([0-5]\d))?\s*(am|pm)\b",
+      texto_sin_fecha,
+  )
+  if m_ampm:
+    hora = int(m_ampm.group(1)) % 12
+    if m_ampm.group(3) == "pm":
+      hora += 12
+    return f"{hora:02d}:{m_ampm.group(2) or '00'}"
+
   m_exp = re.search(
-      r"(?:\ba\s+las\s+)?\b([01]?\d|2[0-3])(?::([0-5]\d))(?:\s*(?:hs?|horas?))?\b",
+      r"(?:\ba\s+las\s+)?\b([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?:\s*(?:hs?|horas?))?\b",
       texto_sin_fecha,
   )
   if m_exp:
@@ -134,7 +177,7 @@ def _sin_tildes(texto: str) -> str:
 def interpretar_turno_basico(texto: str) -> list[dict]:
   texto_original = (texto or "").strip()
   texto_bajo = re.sub(r"\s+", " ", _sin_tildes(texto_original.lower())).strip()
-  hoy = datetime.now()
+  hoy = datetime.now(TZ_AR)
 
   if texto_bajo in {
       "listo",
