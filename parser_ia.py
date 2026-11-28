@@ -2,24 +2,16 @@ from datetime import datetime
 import json
 import os
 import re
+import time
 import unicodedata
+from zoneinfo import ZoneInfo
 
 from fallback_turnos import interpretar_turno_basico
 from google import genai
 from google.genai import types
 
 PRECIO_CORTE_DEFAULT = 10000
-TZ = None
-
-DIAS_SEMANA_ES = [
-    "lunes",
-    "martes",
-    "miércoles",
-    "jueves",
-    "viernes",
-    "sábado",
-    "domingo",
-]
+TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 SCHEMA_TURNO = types.Schema(
     type=types.Type.OBJECT,
@@ -50,7 +42,7 @@ SCHEMA_TURNO = types.Schema(
         ),
         "servicio": types.Schema(
             type=types.Type.STRING,
-            enum=["corte"],
+            enum=["corte", ""],
             description="Servicio solicitado.",
         ),
         "precio": types.Schema(
@@ -87,24 +79,34 @@ Acciones:
 - balance: consultar el balance o total recaudado de los cortes realizados.
 - desconocido: no pudo interpretarse.
 
-Reconvertí todas las fechas relativas usando la fecha y día de la semana actuales del servidor.
-Reglas de fechas:
-- "hoy" -> fecha actual.
-- "mañana" -> fecha actual + 1 día.
-- "pasado mañana" -> fecha actual + 2 días.
-- Si mencionan un día de la semana (lunes, martes, miércoles, jueves, viernes, sábado, domingo) o "el domingo" / "este domingo" / "el lunes que viene": calculá la fecha exacta de la PRÓXIMA fecha futura correspondiente a ese día de la semana a partir de hoy (nunca devuelvas una fecha pasada ni la de hoy si ya pasó ese día). Por ejemplo, si hoy es sábado 28-11-2026, el domingo es 29-11-26.
+Reconvertí todas las fechas relativas usando la fecha actual del servidor.
+Ejemplos:
+- hoy -> fecha actual
+- mañana -> fecha actual + 1 día
+- pasado mañana -> fecha actual + 2 días
+
+Reglas:
+- El cliente es una sola persona por operación.
+- El servicio siempre es "corte".
+- Si no se indica precio, usá 10000.
+- Si se indica un precio con palabras como "precio", "$", "cobra" o
+  "sale", convertilo a número entero sin puntos ni comas.
+- Las horas deben tener formato HH:MM.
+- Las fechas deben tener formato DD-MM-YY (o "todos" si piden todos los turnos).
 - Si el mensaje contiene el nombre de una persona, una fecha y una hora,
   interpretalo como una solicitud para agendar, aunque no diga "agendar"
   ni "turno".
 - Aceptá fechas numéricas como 28/11, 28-11, 28/11/26 y 28-11-26.
   Interpretalas como día/mes/año y devolvelas en formato DD-MM-YY.
 - Si la fecha no incluye año, usá el año actual; si ya pasó, usá el próximo año.
-- Las horas deben tener formato HH:MM (ej. "13" -> "13:00", "18" -> "18:00").
-- El cliente es una sola persona por operación.
-- El servicio siempre es "corte".
-- Si no se indica precio, usá 10000.
-- Si se indica un precio con palabras como "precio", "$", "cobra" o
-  "sale", convertilo a número entero sin puntos ni comas.
+- Aceptá horas como 18, 18:00 y 1800. Devolvelas en formato HH:MM.
+- Ejemplos:
+  - "Juan el 28/11 a las 18:00" -> agendar para Juan el 28-11 del año correspondiente a las 18:00.
+  - "todos" -> accion "consultar", fecha "todos".
+  - "corte realizado juan" -> accion "realizado", cliente "Juan".
+  - "balance" o "cuanto voy" -> accion "balance".
+  - abrir_dia: abrir la jornada / ver agenda de una fecha (por defecto hoy).
+- cerrar_dia: cerrar la jornada / ver resumen de cortes realizados, pendientes y total del día.
 """
 
 
@@ -154,28 +156,59 @@ def interpretar_mensaje(texto: str) -> list[dict]:
   if normalizado in opciones:
     return [{"accion": opciones[normalizado]}]
 
+  # Modo rápido: primero el parser local (instantáneo). Solo se consulta a
+  # Gemini si el local no entendió el mensaje. Para volver a usar Gemini
+  # primero, definir la variable USAR_GEMINI_PRIMERO=1.
+  if os.getenv("USAR_GEMINI_PRIMERO", "").strip().lower() not in {
+      "1",
+      "true",
+      "si",
+  }:
+    try:
+      rapido = interpretar_turno_basico(texto)
+      if (
+          isinstance(rapido, list)
+          and rapido
+          and rapido[0].get("accion") not in (None, "desconocido")
+      ):
+        return rapido
+    except Exception as error_local:
+      print(f"⚠️ Parser local falló: {error_local!r}", flush=True)
+
   api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-  modelo = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+  modelo = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
   try:
     if api_key:
       cliente = genai.Client(api_key=api_key)
-      ahora = datetime.now()
-      fecha_actual = ahora.strftime("%d-%m-%Y")
-      dia_semana = DIAS_SEMANA_ES[ahora.weekday()]
+      fecha_actual = datetime.now(TZ).strftime("%d-%m-%Y")
 
-      respuesta = cliente.models.generate_content(
-          model=modelo,
-          contents=texto,
-          config=types.GenerateContentConfig(
-              system_instruction=(
-                  INSTRUCCIONES_SISTEMA
-                  + f"\nHoy es {dia_semana} {fecha_actual}."
+      respuesta = None
+      for intento in range(3):
+        try:
+          respuesta = cliente.models.generate_content(
+              model=modelo,
+              contents=texto,
+              config=types.GenerateContentConfig(
+                  system_instruction=(
+                      INSTRUCCIONES_SISTEMA
+                      + f"\nFecha actual del servidor: {fecha_actual}."
+                  ),
+                  response_mime_type="application/json",
+                  response_schema=SCHEMA_RESPUESTA,
               ),
-              response_mime_type="application/json",
-              response_schema=SCHEMA_RESPUESTA,
-          ),
-      )
+          )
+          break
+        except Exception as error_intento:
+          # Gemini a veces responde 503 por alta demanda: reintentar.
+          if intento == 2:
+            raise
+          print(
+              f"⚠️ Gemini falló (intento {intento + 1}/3): "
+              f"{error_intento!r}. Reintentando...",
+              flush=True,
+          )
+          time.sleep(1.5 * (intento + 1))
 
       contenido = getattr(respuesta, "text", None)
       if not contenido:
