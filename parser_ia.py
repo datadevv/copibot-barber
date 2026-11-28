@@ -11,6 +11,16 @@ from google.genai import types
 PRECIO_CORTE_DEFAULT = 10000
 TZ = None
 
+DIAS_SEMANA_ES = [
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+]
+
 SCHEMA_TURNO = types.Schema(
     type=types.Type.OBJECT,
     properties={
@@ -77,34 +87,24 @@ Acciones:
 - balance: consultar el balance o total recaudado de los cortes realizados.
 - desconocido: no pudo interpretarse.
 
-Reconvertí todas las fechas relativas usando la fecha actual del servidor.
-Ejemplos:
-- hoy -> fecha actual
-- mañana -> fecha actual + 1 día
-- pasado mañana -> fecha actual + 2 días
-
-Reglas:
-- El cliente es una sola persona por operación.
-- El servicio siempre es "corte".
-- Si no se indica precio, usá 10000.
-- Si se indica un precio con palabras como "precio", "$", "cobra" o
-  "sale", convertilo a número entero sin puntos ni comas.
-- Las horas deben tener formato HH:MM.
-- Las fechas deben tener formato DD-MM-YY (o "todos" si piden todos los turnos).
+Reconvertí todas las fechas relativas usando la fecha y día de la semana actuales del servidor.
+Reglas de fechas:
+- "hoy" -> fecha actual.
+- "mañana" -> fecha actual + 1 día.
+- "pasado mañana" -> fecha actual + 2 días.
+- Si mencionan un día de la semana (lunes, martes, miércoles, jueves, viernes, sábado, domingo) o "el domingo" / "este domingo" / "el lunes que viene": calculá la fecha exacta de la PRÓXIMA fecha futura correspondiente a ese día de la semana a partir de hoy (nunca devuelvas una fecha pasada ni la de hoy si ya pasó ese día). Por ejemplo, si hoy es sábado 28-11-2026, el domingo es 29-11-26.
 - Si el mensaje contiene el nombre de una persona, una fecha y una hora,
   interpretalo como una solicitud para agendar, aunque no diga "agendar"
   ni "turno".
 - Aceptá fechas numéricas como 28/11, 28-11, 28/11/26 y 28-11-26.
   Interpretalas como día/mes/año y devolvelas en formato DD-MM-YY.
 - Si la fecha no incluye año, usá el año actual; si ya pasó, usá el próximo año.
-- Aceptá horas como 18, 18:00 y 1800. Devolvelas en formato HH:MM.
-- Ejemplos:
-  - "Juan el 28/11 a las 18:00" -> agendar para Juan el 28-11 del año correspondiente a las 18:00.
-  - "todos" -> accion "consultar", fecha "todos".
-  - "corte realizado juan" -> accion "realizado", cliente "Juan".
-  - "balance" o "cuanto voy" -> accion "balance".
-  - abrir_dia: abrir la jornada / ver agenda de una fecha (por defecto hoy).
-- cerrar_dia: cerrar la jornada / ver resumen de cortes realizados, pendientes y total del día.
+- Las horas deben tener formato HH:MM (ej. "13" -> "13:00", "18" -> "18:00").
+- El cliente es una sola persona por operación.
+- El servicio siempre es "corte".
+- Si no se indica precio, usá 10000.
+- Si se indica un precio con palabras como "precio", "$", "cobra" o
+  "sale", convertilo a número entero sin puntos ni comas.
 """
 
 
@@ -160,7 +160,9 @@ def interpretar_mensaje(texto: str) -> list[dict]:
   try:
     if api_key:
       cliente = genai.Client(api_key=api_key)
-      fecha_actual = datetime.now().strftime("%d-%m-%Y")
+      ahora = datetime.now()
+      fecha_actual = ahora.strftime("%d-%m-%Y")
+      dia_semana = DIAS_SEMANA_ES[ahora.weekday()]
 
       respuesta = cliente.models.generate_content(
           model=modelo,
@@ -168,7 +170,7 @@ def interpretar_mensaje(texto: str) -> list[dict]:
           config=types.GenerateContentConfig(
               system_instruction=(
                   INSTRUCCIONES_SISTEMA
-                  + f"\nFecha actual del servidor: {fecha_actual}."
+                  + f"\nHoy es {dia_semana} {fecha_actual}."
               ),
               response_mime_type="application/json",
               response_schema=SCHEMA_RESPUESTA,
