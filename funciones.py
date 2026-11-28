@@ -2,6 +2,9 @@ from datetime import datetime
 import json
 import os
 import openpyxl
+from zoneinfo import ZoneInfo
+
+TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
 
 COLUMNAS_TURNOS = [
     "Fecha",
@@ -191,7 +194,7 @@ def agendar_turno(datos, ruta_excel="turnos.xlsx"):
   almacen = _almacen(ruta_excel)
 
   fecha = _normalizar_fecha_excel(
-      datos.get("fecha") or datetime.now().strftime("%d-%m-%y")
+      datos.get("fecha") or datetime.now(TZ_AR).strftime("%d-%m-%y")
   )
   hora = _normalizar_hora_excel(datos.get("hora"))
   cliente = str(datos.get("cliente") or "").strip().title()
@@ -254,7 +257,7 @@ def consultar_turnos(
     return "\n".join(lineas)
 
   fecha_objetivo = _normalizar_fecha_excel(
-      fecha or datetime.now().strftime("%d-%m-%y")
+      fecha or datetime.now(TZ_AR).strftime("%d-%m-%y")
   )
   turnos = [
       (
@@ -380,7 +383,7 @@ def marcar_corte_realizado(datos, ruta_excel="turnos.xlsx"):
 def consultar_balance(fecha=None, ruta_excel="turnos.xlsx"):
   almacen = _almacen(ruta_excel)
   fecha_dia = _normalizar_fecha_excel(
-      fecha or datetime.now().strftime("%d-%m-%y")
+      fecha or datetime.now(TZ_AR).strftime("%d-%m-%y")
   )
 
   realizado_dia = 0.0
@@ -432,7 +435,7 @@ def consultar_balance(fecha=None, ruta_excel="turnos.xlsx"):
 
 def abrir_dia(fecha=None, ruta_excel="turnos.xlsx"):
   fecha_objetivo = _normalizar_fecha_excel(
-      fecha or datetime.now().strftime("%d-%m-%y")
+      fecha or datetime.now(TZ_AR).strftime("%d-%m-%y")
   )
   agenda = consultar_turnos(fecha=fecha_objetivo, ruta_excel=ruta_excel)
   return f"🌅 *Apertura del día ({fecha_objetivo}):*\n\n{agenda}"
@@ -441,7 +444,7 @@ def abrir_dia(fecha=None, ruta_excel="turnos.xlsx"):
 def cerrar_dia(fecha=None, ruta_excel="turnos.xlsx"):
   almacen = _almacen(ruta_excel)
   fecha_objetivo = _normalizar_fecha_excel(
-      fecha or datetime.now().strftime("%d-%m-%y")
+      fecha or datetime.now(TZ_AR).strftime("%d-%m-%y")
   )
 
   realizados = []
