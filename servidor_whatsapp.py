@@ -28,6 +28,7 @@ REMITENTES_AUTORIZADOS = {
     "5491176361030@s.whatsapp.net",
     "5491136504266@s.whatsapp.net",
      "5491134942084@s.whatsapp.net",
+     "5491144449381@s.whatsapp.net",
 }
 
 # Este número conserva el Excel que ya existía (turnos.xlsx).
