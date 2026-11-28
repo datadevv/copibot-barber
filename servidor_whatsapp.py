@@ -27,8 +27,6 @@ EVOLUTION_APIKEY = os.getenv("EVOLUTION_APIKEY", "")
 REMITENTES_AUTORIZADOS = {
     "5491176361030@s.whatsapp.net",
     "5491136504266@s.whatsapp.net",
-     "5491134942084@s.whatsapp.net",
-     "5491144449381@s.whatsapp.net",
 }
 
 # Este número conserva el Excel que ya existía (turnos.xlsx).
@@ -151,6 +149,10 @@ def extraer_mensajes_nuevos(payload: dict) -> list[tuple[str, str, str]]:
       continue
 
     remitente = key.get("remoteJid") or ""
+    # WhatsApp a veces manda un ID interno (@lid) en vez del número real.
+    # El número real viene en remoteJidAlt.
+    if remitente.endswith("@lid"):
+      remitente = key.get("remoteJidAlt") or remitente
     if not es_chat_valido(remitente):
       continue
 
@@ -327,6 +329,8 @@ def recibir_mensaje_whatsapp():
   data = datos_recibidos.get("data")
   clave = data.get("key", {}) if isinstance(data, dict) else {}
   remitente = clave.get("remoteJid", "")
+  if remitente.endswith("@lid"):
+    remitente = clave.get("remoteJidAlt") or remitente
 
   if (
       datos_recibidos.get("event") == "messages.upsert"
